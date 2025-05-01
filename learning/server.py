@@ -1,7 +1,7 @@
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from app import report, qa_retrieve_and_answer
+from main import report, qa_retrieve_and_answer
 import shutil
 import os
 from dotenv import load_dotenv

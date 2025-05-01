@@ -34,40 +34,74 @@ if not OPENAI_API_KEY:
 if not TAVILY_API_KEY:
     raise EnvironmentError("Tavily api key is not set.")
 
-try:
-    logger.info("Processing document...")
-    docs = load_document(dummy_data_path)
-    characters_in_pdf = count_characters_in_pdf(dummy_data_path)
-    chunk_size = characters_in_pdf // 16
-    chunk_overlap = 20
-    print(f"Words in PDF: {characters_in_pdf}")
-    print(f"Chunk size: {chunk_size}")
-    print(f"Chunk overlap: {chunk_overlap}")
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=chunk_size, chunk_overlap=chunk_overlap
-    )
-    all_splits = text_splitter.split_documents(docs)
-    # TODO: Valos vector store kiprobalasa
-    vector_store.add_documents(documents=all_splits)
-    logger.info("Processing document finished.")
-except Exception as e:
-    print(f"Error {e}")
-    raise
+def process_document(file_path: str):
+    """Process a document by loading, splitting, and adding it to the vector store."""
+    try:
+        logger.info("Processing document...")
+        docs = load_document(file_path)
+        characters_in_pdf = count_characters_in_pdf(file_path)
+        chunk_size = characters_in_pdf // 16
+        chunk_overlap = 20
+        logger.info(f"Words in PDF: {characters_in_pdf}")
+        logger.info(f"Chunk size: {chunk_size}, Chunk overlap: {chunk_overlap}")
 
-user_q = "Mi az a VFS?"
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size, chunk_overlap=chunk_overlap
+        )
+        all_splits = text_splitter.split_documents(docs)
+        vector_store.add_documents(documents=all_splits)
+        logger.info("Processing document finished.")
+    except Exception as e:
+        logger.error(f"Error processing document: {e}")
+        raise
 
-try:
-    logger.info(f"2. Running similarity search on document. Query: {user_q}")
-    retrieved_context = vector_store.similarity_search(user_q, k=1)
-    all_context = " ".join([doc.page_content for doc in retrieved_context])
-    logger.info("Running similarity search finished.")
-except Exception as e:
-    print(f"Error: {e}")
-    raise
+def run_similarity_search(query: str):
+    """Run a similarity search on the vector store."""
+    try:
+        logger.info(f"Running similarity search. Query: {query}")
+        retrieved_context = vector_store.similarity_search(query, k=1)
+        all_context = " ".join([doc.page_content for doc in retrieved_context])
+        logger.info("Similarity search finished.")
+        return all_context
+    except Exception as e:
+        logger.error(f"Error during similarity search: {e}")
+        raise
 
-try:
-    logger.info("3. Running processing context with LLM.")
-    context_message = f"""Kérdés: {user_q} Szöveg: {all_context}"""
+def generate_response_with_llm(prompt: List):
+    """Generate a response using the LLM with streaming."""
+    try:
+        logger.info("Processing context with LLM.")
+        response_text = ""
+        for chunk in llm.stream(prompt):
+            response_text += chunk.text()
+        logger.info("LLM processing finished.")
+        return response_text
+    except Exception as e:
+        logger.error(f"Error during LLM processing: {e}")
+        raise
+
+def run_tavily_tool(query: str, context: str):
+    """Run the Tavily tool with the given query and context."""
+    try:
+        logger.info("Running Tavily tool.")
+        tavily_prompt = f"Question: {query} Context: {context}"
+        response = tavily_tool.invoke({"query": tavily_prompt})
+        results = response["results"]
+        best_result = max(results, key=lambda x: x["score"])
+        logger.info("Tavily tool finished.")
+        return best_result["content"]
+    except Exception as e:
+        logger.error(f"Error during Tavily tool execution: {e}")
+        raise
+
+# Main execution
+if __name__ == "__main__":
+    process_document(dummy_data_path)
+
+    user_q = "Mi az a VFS?"
+    all_context = run_similarity_search(user_q)
+
+    context_message = f"Kérdés: {user_q} Szöveg: {all_context}"
     refactor_prompt = [
         SystemMessage(
             content="A feladatod, hogy kielégítsd a felhasználó igényeit. Jártas vagy szövegek írásában."
@@ -76,33 +110,11 @@ try:
             content=f"Add meg a szöveg tartalmának a témáját és rövid leírását, maximum 250 karakterben. A kérdést nem kell újra leirnod a válaszodban. {context_message}"
         ),
     ]
-    response_text = ""
-    for chunk in llm.stream(refactor_prompt):
-        text_chunk = chunk.text()
-        response_text += text_chunk
-    logger.info("Running processing context with LLM finished.")
-except Exception as e:
-    print(f"Error: {e}")
-    raise
+    response_text = generate_response_with_llm(refactor_prompt)
 
-try:
-    logger.info("4. Running Tavily tool.")
-    tavily_prompt = f"""Question: {user_q} Context: {response_text}"""
-    response = tavily_tool.invoke({"query": tavily_prompt})
-    results = response["results"]
-    max = 0
-    for i in range(0, len(results)):
-        if results[i]["score"] > results[max]["score"]:
-            max = i
-    final_context = results[max]["content"]
-    logger.info("Running Tavily tool finished.")
-except Exception as e:
-    print(f"Error: {e}")
-    raise
+    final_context = run_tavily_tool(user_q, response_text)
 
-try:
-    logger.info("5. Creating final answer with LLM, query and context...")
-    final_context_message = f"""Kérdés: {user_q} Kontextus: {response_text} További kontextus: {final_context}"""
+    final_context_message = f"Kérdés: {user_q} Kontextus: {response_text} További kontextus: {final_context}"
     final_prompt = [
         SystemMessage(
             content="Egy kedves, jókifejező készséggel rendelkező tanár vagy akinek a feladata, hogy tanítványait megtanítsa éppen az adott témára. Képes vagy felmérni a tanítványod tudását és értelmét, hogy minél pontosabban tudj megfogalmazni. Ha nem tudod a választ valamilyen kérdésre akkor csak annyit mondasz 'Nem tudom a választ.'. Semmi személyes kérdést nem teszel fel és nem válaszolsz rájuk."
@@ -114,12 +126,5 @@ try:
             content="Write the following text using proper Markdown formatting. Use headings (#), subheadings (##), bullet points (- or *), numbered lists (1.), bold (**bold**), italic (*italic*), code blocks (`code` or triple backticks), blockquotes (>) where appropriate, and ensure all links are in [text](url) format."
         ),
     ]
-    final_response = ""
-    for chunk in llm.stream(final_prompt):
-        text_chunk = chunk.text()
-        final_response += text_chunk
-        print(text_chunk, end="")
-    logger.info("Creating final answer finished.")
-except Exception as e:
-    print(f"Error: {e}")
-    raise
+    final_response = generate_response_with_llm(final_prompt)
+    print(final_response)
